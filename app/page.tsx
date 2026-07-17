@@ -5,6 +5,7 @@ import { supabase, type Task } from "@/lib/supabaseClient";
 
 const PRIORITIES = ["Low", "Medium", "High"] as const;
 const STATUSES = ["Lead", "Contacted", "Proposal", "Won", "Lost"] as const;
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const emptyForm = {
   title: "",
@@ -16,6 +17,26 @@ const emptyForm = {
   notes: "",
 };
 
+// --- date helpers (local time) ---
+function toDateStr(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function startOfWeek(d: Date) {
+  const nd = new Date(d);
+  nd.setHours(0, 0, 0, 0);
+  const diff = (nd.getDay() + 6) % 7; // days since Monday
+  nd.setDate(nd.getDate() - diff);
+  return nd;
+}
+function addDays(d: Date, n: number) {
+  const nd = new Date(d);
+  nd.setDate(nd.getDate() + n);
+  return nd;
+}
+
 export default function Home() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +45,8 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [view, setView] = useState<"list" | "week">("list");
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
 
   async function loadTasks() {
     setLoading(true);
@@ -114,7 +137,34 @@ export default function Home() {
   const money = (n: number) =>
     n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = toDateStr(new Date());
+
+  // --- week view derived data ---
+  const weekDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
+    [weekStart]
+  );
+  const weekEnd = weekDays[6];
+  const tasksByDay = useMemo(() => {
+    const map: Record<string, Task[]> = {};
+    for (const d of weekDays) map[toDateStr(d)] = [];
+    for (const t of filtered) {
+      if (t.follow_up_date && map[t.follow_up_date]) {
+        map[t.follow_up_date].push(t);
+      }
+    }
+    return map;
+  }, [filtered, weekDays]);
+  const unscheduledCount = useMemo(
+    () => filtered.filter((t) => !t.follow_up_date).length,
+    [filtered]
+  );
+
+  const weekLabel = () => {
+    const fmt = (d: Date) =>
+      d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return `${fmt(weekStart)} – ${fmt(weekEnd)}`;
+  };
 
   return (
     <main className="container">
@@ -266,10 +316,121 @@ export default function Home() {
             </option>
           ))}
         </select>
+        <div className="view-toggle" role="tablist" aria-label="View">
+          <button
+            className={view === "list" ? "active" : ""}
+            onClick={() => setView("list")}
+            aria-pressed={view === "list"}
+          >
+            List
+          </button>
+          <button
+            className={view === "week" ? "active" : ""}
+            onClick={() => setView("week")}
+            aria-pressed={view === "week"}
+          >
+            Week
+          </button>
+        </div>
       </div>
+
+      {view === "week" && (
+        <div className="week-nav">
+          <button
+            className="icon-btn"
+            onClick={() => setWeekStart(addDays(weekStart, -7))}
+            aria-label="Previous week"
+          >
+            ‹ Prev
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => setWeekStart(startOfWeek(new Date()))}
+          >
+            Today
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => setWeekStart(addDays(weekStart, 7))}
+            aria-label="Next week"
+          >
+            Next ›
+          </button>
+          <span className="week-label">{weekLabel()}</span>
+        </div>
+      )}
 
       {loading ? (
         <div className="empty">Loading...</div>
+      ) : view === "week" ? (
+        <>
+          <div className="week-grid">
+            {weekDays.map((day) => {
+              const ds = toDateStr(day);
+              const dayTasks = tasksByDay[ds] ?? [];
+              const isToday = ds === todayStr;
+              return (
+                <div
+                  key={ds}
+                  className={`week-day ${isToday ? "today" : ""}`}
+                >
+                  <div className="week-day-header">
+                    <span className="dow">{DAY_NAMES[(day.getDay() + 6) % 7]}</span>
+                    <span className="dom">{day.getDate()}</span>
+                  </div>
+                  <div className="week-day-body">
+                    {dayTasks.length === 0 ? (
+                      <div className="week-empty">—</div>
+                    ) : (
+                      dayTasks.map((task) => (
+                        <div
+                          key={task.id}
+                          className={`week-task pri-border-${task.priority} ${
+                            task.done ? "done" : ""
+                          }`}
+                        >
+                          <label className="week-task-top">
+                            <input
+                              type="checkbox"
+                              checked={task.done}
+                              onChange={() => toggleDone(task)}
+                              aria-label="Mark done"
+                            />
+                            <span className="week-task-title">
+                              {task.title}
+                            </span>
+                          </label>
+                          {task.client && (
+                            <div className="week-task-client">
+                              👤 {task.client}
+                            </div>
+                          )}
+                          <div className="week-task-meta">
+                            <span className={`badge status-${task.status}`}>
+                              {task.status}
+                            </span>
+                            {task.deal_value != null && (
+                              <span className="week-task-value">
+                                {money(task.deal_value)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {unscheduledCount > 0 && (
+            <div className="unscheduled-note">
+              {unscheduledCount} task{unscheduledCount === 1 ? "" : "s"} with no
+              follow-up date {unscheduledCount === 1 ? "is" : "are"} not shown on
+              the calendar. Switch to List view to see {unscheduledCount === 1 ? "it" : "them"}.
+            </div>
+          )}
+        </>
       ) : filtered.length === 0 ? (
         <div className="empty">No tasks yet. Add your first one above.</div>
       ) : (
